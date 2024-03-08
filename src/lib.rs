@@ -62,11 +62,14 @@
 //! [`tourniquet-tonic`]: https://lib.rs/tourniquet-tonic
 
 use core::future::Future;
+use futures::future::FutureExt;
 use std::{
     fmt::{Debug, Display},
     marker::PhantomData,
-    sync::atomic::{AtomicUsize, Ordering},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 pub use async_trait::async_trait;
@@ -294,9 +297,24 @@ where
     /// Run the provided async function against an established service connection.
     ///
     /// The connection to the service will be established at this point if not already established.
+    ///
+    /// This is equivalent to run_with_graceful_shutdown(std::future::pending(), run)
     #[cfg_attr(feature = "tracing", instrument(skip(self, run), err))]
     pub async fn run<R, Fut, T>(&self, run: R) -> Result<T, E>
     where
+        R: Fn(Arc<Svc>) -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        return self.run_with_graceful_shutdown(std::future::pending(), run).await;
+    }
+
+    /// Run the provided async function against an established service connection until signal future completes.
+    ///
+    /// The connection to the service will be established at this point if not already established.
+    #[cfg_attr(feature = "tracing", instrument(skip(self, signal, run), err))]
+    pub async fn run_with_graceful_shutdown<F, R, Fut, T>(&self, signal: F, run: R) -> Result<T, E>
+    where
+        F: Future<Output = ()>,
         R: Fn(Arc<Svc>) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
@@ -304,6 +322,10 @@ where
         let mut attempts = 0usize;
 
         loop {
+            if signal.now_or_never().is_some() {
+                return Err("all is swell".into());
+            }
+
             let current = self.current.load(Ordering::Relaxed);
 
             match self.run_inner(&run, current).await {
